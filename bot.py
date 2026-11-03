@@ -145,13 +145,13 @@ def analyze(symbol, funding):
     downtrend = price < trend and fast[-1] < slow[-1]
 
     if uptrend and c[-1] > hi20 and vol_x >= VOL_SPIKE and r[-1] < 75:
-        side, reason = "LONG", f"Breakout above 20-candle high, volume x{vol_x:.1f}"
+        side, reason = "LONG", f"شکست سقف ۲۰ کندل اخیر با حجم {vol_x:.1f} برابر"
     elif uptrend and r[-2] < 40 <= r[-1]:
-        side, reason = "LONG", "Pullback in uptrend, RSI turning up from 40"
+        side, reason = "LONG", "پولبک در روند صعودی، برگشت RSI به بالا از ۴۰"
     elif downtrend and c[-1] < lo20 and vol_x >= VOL_SPIKE and r[-1] > 25:
-        side, reason = "SHORT", f"Breakdown below 20-candle low, volume x{vol_x:.1f}"
+        side, reason = "SHORT", f"شکست کف ۲۰ کندل اخیر با حجم {vol_x:.1f} برابر"
     elif downtrend and r[-2] > 60 >= r[-1]:
-        side, reason = "SHORT", "Bounce in downtrend, RSI turning down from 60"
+        side, reason = "SHORT", "برگشت در روند نزولی، چرخش RSI به پایین از ۶۰"
     elif abs(change) >= PUMP_PCT and vol_x >= PUMP_VOL:
         return {"type": "ALERT", "symbol": symbol, "price": price, "change": change, "vol_x": vol_x}
 
@@ -194,21 +194,22 @@ def send(text):
 def message(s):
     pair = s["symbol"].replace("_", "/")
     if s["type"] == "ALERT":
-        arrow = "🚀 Pump" if s["change"] > 0 else "🔻 Dump"
-        return (f"{arrow} <b>{pair}</b> (KCEX futures)\n"
-                f"15m move: {s['change']:+.2f}%  |  Volume x{s['vol_x']:.1f}\n"
-                f"Price: {fmt(s['price'])}\n⚠️ Watch only, no setup yet.")
+        arrow = "🚀 پامپ" if s["change"] > 0 else "🔻 دامپ"
+        return (f"{arrow} <b>{pair}</b> (فیوچرز KCEX)\n"
+                f"حرکت ۱۵ دقیقه: {s['change']:+.2f}%  |  حجم {s['vol_x']:.1f} برابر\n"
+                f"قیمت: {fmt(s['price'])}\n⚠️ فقط زیر نظر بگیر، هنوز ستاپ ورود نیست.")
     icon = "🟢" if s["side"] == "LONG" else "🔴"
-    return (f"{icon} <b>{s['side']} {pair}</b> (KCEX futures, 15m)\n"
+    side_fa = "لانگ (خرید)" if s["side"] == "LONG" else "شورت (فروش)"
+    return (f"{icon} <b>{side_fa} {pair}</b> (فیوچرز KCEX، تایم ۱۵ دقیقه)\n"
             f"📌 {s['reason']}\n\n"
-            f"Entry: {fmt(s['price'])}\n"
-            f"Stop-loss: {fmt(s['sl'])} ({s['stop_pct']:.2f}%)\n"
-            f"TP1: {fmt(s['tp1'])} ({TP1_R}R, close 50% & move SL to entry)\n"
-            f"TP2: {fmt(s['tp2'])} ({TP2_R}R)\n\n"
-            f"Leverage: max {s['lev']}x, isolated margin\n"
-            f"Risk: {RISK_PCT}% of account per trade\n"
-            f"RSI {s['rsi']:.0f}  |  Funding {s['funding']:+.4f}%\n"
-            f"Not financial advice.")
+            f"ورود: {fmt(s['price'])}\n"
+            f"حد ضرر: {fmt(s['sl'])} ({s['stop_pct']:.2f}%)\n"
+            f"تارگت ۱: {fmt(s['tp1'])} ({TP1_R}R، نصف پوزیشن را ببند و حد ضرر را به نقطه ورود ببر)\n"
+            f"تارگت ۲: {fmt(s['tp2'])} ({TP2_R}R)\n\n"
+            f"اهرم: حداکثر {s['lev']}x، مارجین Isolated\n"
+            f"ریسک: {RISK_PCT}% حساب در هر معامله\n"
+            f"RSI {s['rsi']:.0f}  |  فاندینگ {s['funding']:+.4f}%\n"
+            f"این توصیه مالی نیست.")
 
 
 # ---------------- main loop ----------------
@@ -233,7 +234,7 @@ def scan_once():
 
 
 def scanner_loop():
-    send("✅ Crypto Scanner started (KCEX futures, 15m + 1h trend).")
+    send("✅ اسکنر کریپتو شروع به کار کرد (فیوچرز KCEX، تایم ۱۵ دقیقه + روند ۱ ساعته).")
     while True:
         start = time.time()
         try:
