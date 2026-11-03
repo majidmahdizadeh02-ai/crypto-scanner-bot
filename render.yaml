@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: crypto-scanner-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    healthCheckPath: /
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: MIN_VOLUME_USDT
+        value: "5000000"
+      - key: SCAN_INTERVAL_MIN
+        value: "5"
+      - key: MAX_LEVERAGE
+        value: "5"
