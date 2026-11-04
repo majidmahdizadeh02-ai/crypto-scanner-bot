@@ -158,6 +158,7 @@ def resolve(sig, highs, lows, closes, fee_pct=0.12, max_bars=96):
     closed at that candle's close. Returns (result, R after fees, bars)."""
     side, e, sl, tp1, tp2 = sig["side"], sig["price"], sig["sl"], sig["tp1"], sig["tp2"]
     risk = abs(e - sl)
+    TP1_R, TP2_R = abs(tp1 - e) / risk, abs(tp2 - e) / risk  # read targets from the signal
     fee_r = (fee_pct / 100) * e / risk
     long_ = side == "LONG"
     half = False

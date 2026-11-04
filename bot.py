@@ -1,6 +1,11 @@
 """
 Crypto Scanner Bot for KCEX futures traders (signals only, no auto-trading).
 
+v4: entries come from strategy4.py (price action: liquidity sweep + reclaim with
+15m/1h market structure, and Bollinger squeeze breakouts), exits 2xATR stop,
+TP1 1R, TP2 2R. Every signal is also taken on a paper-trading account
+(paper.py) whose state lives in a pinned Telegram message.
+
 v3: a macro/fundamental filter (macro.py) scores the market every 30 min from
 TOTAL/TOTAL2, BTC and USDT dominance, S&P 500, Nasdaq, gold, oil, Whale Alert
 flows, CoinDesk / CoinMarketCap / Cointelegraph headlines, Iran-US news and the
@@ -40,7 +45,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import requests
 
 import strategy as S
+import strategy4 as V
 import macro
+import paper
+import pa as P
 
 # ---------------- settings ----------------
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -158,10 +166,9 @@ def analyze(symbol, funding):
     h4 = klines(symbol, "Hour4", 55)
     if not m15 or not h1 or not h4:
         return None
-    E, H = S.prep_entry(m15), S.prep_htf(h1, h4)
+    E = S.prep_entry(m15)
     i = len(m15["close"]) - 1
-    bias = S.htf_bias(H, len(h1["close"]) - 1, len(h4["close"]) - 1)
-    sig = S.signal_at(E, i, bias)
+    sig = V.setup_at(m15, h1, h4)
     if sig:
         lev = max(1, min(MAX_LEV, int(10 / sig["stop_pct"]))) if sig["stop_pct"] > 0 else 1
         candle_close = m15["time"][i] + 900
@@ -194,7 +201,9 @@ def follow_up():
         rec = {"id": s["id"], "symbol": s["symbol"], "side": s["side"], "result": out,
                "R": round(r, 2), "bars": bars, "signal_ts": s["ts"], "closed_at": int(time.time())}
         journal("RESULT", rec)
-        send(result_message(s, rec))
+        pnl = paper.close_trade(s["id"], r)
+        send(result_message(s, rec) + (f"\n💼 حساب آزمایشی: {fa(format(pnl, '+.2f'))} دلار → "
+                                       f"{fa(format(paper.state['bal'], ',.2f'))} دلار" if pnl is not None else ""))
         with lock:
             open_signals[:] = [x for x in open_signals if x["id"] != s["id"]]
         time.sleep(0.15)
@@ -240,14 +249,16 @@ def message(s):
     mood = macro.mood_line()
     side_fa = "لانگ (خرید)" if s["side"] == "LONG" else "شورت (فروش)"
     trend = "صعودی" if s["side"] == "LONG" else "نزولی"
+    pats = "، ".join(P.LABELS[p] for p in s.get("pats", []) if p in P.LABELS)
     return (f"{icon} {tag}<b>{side_fa} {pair}</b> (فیوچرز KCEX، تایم ۱۵ دقیقه)\n"
-            f"📌 روند ۱ و ۴ ساعته {trend} + کراس MACD + RSI {fa(format(s['rsi'], '.0f'))} "
-            f"+ حجم {fa(format(s['vol_x'], '.1f'))} برابر\n\n"
+            f"📌 {V.NAMES.get(s.get('setup'), '')} | روند ۱ و ۴ ساعته {trend} | ساختار {'HH/HL' if s['side'] == 'LONG' else 'LH/LL'}"
+            + (f" | {pats}" if pats else "") +
+            f" | حجم {fa(format(s['vol_x'], '.1f'))} برابر\n\n"
             f"ورود: {fmt(s['price'])}\n"
             f"حد ضرر: {fmt(s['sl'])} ({fa(format(s['stop_pct'], '.2f'))}%، "
-            f"{fa(S.SL_ATR)} برابر ATR)\n"
-            f"تارگت ۱: {fmt(s['tp1'])} ({fa(S.TP1_R)}R، نصف پوزیشن را ببند و حد ضرر را به نقطه ورود ببر)\n"
-            f"تارگت ۲: {fmt(s['tp2'])} ({fa(S.TP2_R)}R)\n\n"
+            f"{fa(format(V.SL_ATR, 'g'))} برابر ATR)\n"
+            f"تارگت ۱: {fmt(s['tp1'])} ({fa(format(V.TP1_R, 'g'))}R، نصف پوزیشن را ببند و حد ضرر را به نقطه ورود ببر)\n"
+            f"تارگت ۲: {fmt(s['tp2'])} ({fa(format(V.TP2_R, 'g'))}R)\n\n"
             f"اهرم: حداکثر {fa(s['lev'])}x، مارجین Isolated\n"
             f"ریسک: {fa(RISK_PCT)}% حساب در هر معامله\n"
             f"فاندینگ {fa(format(s['funding'], '+.4f'))}%\n"
@@ -265,13 +276,11 @@ def result_message(s, rec):
 
 
 def daily_report():
-    st = stats(time.time() - 86400)
-    if not st:
-        return
+    st = stats(time.time() - 86400) or {"n": 0, "wins": 0, "losses": 0, "total_R": 0.0}
     send(f"📊 کارنامه ۲۴ ساعت گذشته\n"
          f"بسته‌شده: {fa(st['n'])}  |  سود: {fa(st['wins'])}  |  ضرر: {fa(st['losses'])}\n"
          f"جمع: {fa(format(st['total_R'], '+.2f'))}R  |  "
-         f"باز: {fa(len(open_signals))}")
+         f"باز: {fa(len(open_signals))}\n" + paper.summary_fa(fa))
 
 
 # ---------------- main loop ----------------
@@ -298,7 +307,8 @@ def scan_once():
                     last_signal[sym] = time.time()
                     continue
                 journal("SIGNAL", {k: s[k] for k in ("id", "symbol", "side", "price", "sl", "tp1",
-                                                     "tp2", "stop_pct", "rsi", "vol_x", "ts")})
+                                                     "tp2", "stop_pct", "rsi", "vol_x", "ts", "setup")})
+                s["risk_usd"] = paper.open_trade(s)
                 with lock:
                     open_signals.append(s)
             send(message(s))
@@ -312,7 +322,11 @@ def scanner_loop():
     if not TOKEN or not CHAT_ID:
         log.error("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing: signals will only appear in logs!")
     load_journal()
-    send("✅ اسکنر کریپتو نسخه ۳ شروع به کار کرد: تکنیکال ۱۵ دقیقه + روند ۱ و ۴ ساعته + فیلتر بنیادی و کلان، همراه طلا و نقره.")
+    known = {o["id"] for o in open_signals}
+    restored = [o for o in paper.load() if o["id"] not in known]
+    open_signals.extend(restored)
+    send("✅ اسکنر کریپتو نسخه ۴ شروع به کار کرد: پرایس اکشن (شکار نقدینگی و ساختار بازار) + شکست بولینگر، "
+         "روند ۱ و ۴ ساعته، فیلتر بنیادی و کلان، طلا و نقره، و حساب آزمایشی (Paper) ۱۰۰۰ دلاری.\n" + paper.summary_fa(fa))
     last_day = datetime.now(timezone.utc).date()
     sent_brief = set()
     while True:
