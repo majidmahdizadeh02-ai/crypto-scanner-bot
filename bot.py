@@ -309,6 +309,19 @@ def scanner_loop():
         time.sleep(max(30, SCAN_INTERVAL - (time.time() - start)))
 
 
+def keep_awake():
+    """Ping our own public URL every 10 min so Render's free plan never spins down."""
+    url = os.getenv("RENDER_EXTERNAL_URL")
+    if not url:
+        return
+    while True:
+        time.sleep(600)
+        try:
+            requests.get(url, timeout=20)
+        except Exception as e:
+            log.warning("keep-awake ping failed: %s", e)
+
+
 class Health(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -325,6 +338,7 @@ class Health(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     threading.Thread(target=scanner_loop, daemon=True).start()
+    threading.Thread(target=keep_awake, daemon=True).start()
     port = int(os.getenv("PORT", "10000"))
     log.info("health server on port %d", port)
     HTTPServer(("0.0.0.0", port), Health).serve_forever()
