@@ -1,6 +1,13 @@
 """
 Crypto Scanner Bot for KCEX futures traders (signals only, no auto-trading).
 
+v3: a macro/fundamental filter (macro.py) scores the market every 30 min from
+TOTAL/TOTAL2, BTC and USDT dominance, S&P 500, Nasdaq, gold, oil, Whale Alert
+flows, CoinDesk / CoinMarketCap / Cointelegraph headlines, Iran-US news and the
+US economic calendar. It blocks counter-regime signals, pauses all signals 30
+min around high-impact US data, always scans gold (XAU) and silver, and sends a
+market brief at 09:00 and 18:00 Tehran.
+
 KCEX has no public API, so market data comes from MEXC's public futures API
 (same USDT-perpetual pairs, very close prices). The bot scans liquid pairs with
 the v2 strategy in strategy.py (EMA + MACD + RSI + volume on 15m, 1h/4h trend
@@ -27,12 +34,13 @@ import os
 import time
 import threading
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import requests
 
 import strategy as S
+import macro
 
 # ---------------- settings ----------------
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -47,6 +55,8 @@ SIGNAL_LOG = os.getenv("SIGNAL_LOG", "signals.jsonl")
 BASE = "https://contract.mexc.com/api/v1/contract"
 EXCLUDE = {"USDC_USDT"}
 PUMP_PCT, PUMP_VOL = 4.0, 3.0
+TEHRAN = timezone(timedelta(hours=3, minutes=30))
+BRIEF_HOURS = (9, 18)
 MAX_HOLD_BARS = 96  # follow a signal for 24h of 15m candles, then close it
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -78,7 +88,7 @@ def liquid_symbols():
         (t["symbol"], float(t.get("fundingRate") or 0))
         for t in data
         if t["symbol"].endswith("_USDT") and t["symbol"] not in EXCLUDE
-        and float(t.get("amount24") or 0) >= MIN_VOLUME
+        and (float(t.get("amount24") or 0) >= MIN_VOLUME or t["symbol"] in macro.METALS)
     ]
 
 
@@ -226,9 +236,11 @@ def message(s):
                 f"حجم {fa(format(s['vol_x'], '.1f'))} برابر\n"
                 f"قیمت: {fmt(s['price'])}\n⚠️ فقط زیر نظر بگیر، هنوز ستاپ ورود نیست.")
     icon = "🟢" if s["side"] == "LONG" else "🔴"
+    tag = {"XAU_USDT": "🥇 طلا ", "XAUT_USDT": "🥇 طلا ", "SILVER_USDT": "🥈 نقره "}.get(s["symbol"], "")
+    mood = macro.mood_line()
     side_fa = "لانگ (خرید)" if s["side"] == "LONG" else "شورت (فروش)"
     trend = "صعودی" if s["side"] == "LONG" else "نزولی"
-    return (f"{icon} <b>{side_fa} {pair}</b> (فیوچرز KCEX، تایم ۱۵ دقیقه)\n"
+    return (f"{icon} {tag}<b>{side_fa} {pair}</b> (فیوچرز KCEX، تایم ۱۵ دقیقه)\n"
             f"📌 روند ۱ و ۴ ساعته {trend} + کراس MACD + RSI {fa(format(s['rsi'], '.0f'))} "
             f"+ حجم {fa(format(s['vol_x'], '.1f'))} برابر\n\n"
             f"ورود: {fmt(s['price'])}\n"
@@ -239,6 +251,7 @@ def message(s):
             f"اهرم: حداکثر {fa(s['lev'])}x، مارجین Isolated\n"
             f"ریسک: {fa(RISK_PCT)}% حساب در هر معامله\n"
             f"فاندینگ {fa(format(s['funding'], '+.4f'))}%\n"
+            + (f"{mood}\n" if mood else "") +
             f"نتیجه این سیگنال خودکار ثبت و گزارش می‌شود. این توصیه مالی نیست.")
 
 
@@ -278,6 +291,12 @@ def scan_once():
             if s["type"] == "SIGNAL":
                 if any(o["id"] == s["id"] for o in open_signals):
                     continue
+                ok, why = macro.allow(sym, s["side"])
+                if not ok:
+                    journal("FILTERED", {"id": s["id"], "symbol": sym, "side": s["side"],
+                                         "reason": why, "score": macro.state["score"]})
+                    last_signal[sym] = time.time()
+                    continue
                 journal("SIGNAL", {k: s[k] for k in ("id", "symbol", "side", "price", "sl", "tp1",
                                                      "tp2", "stop_pct", "rsi", "vol_x", "ts")})
                 with lock:
@@ -293,8 +312,9 @@ def scanner_loop():
     if not TOKEN or not CHAT_ID:
         log.error("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing: signals will only appear in logs!")
     load_journal()
-    send("✅ اسکنر کریپتو نسخه ۲ شروع به کار کرد (فیوچرز KCEX، ورود ۱۵ دقیقه + روند ۱ و ۴ ساعته).")
+    send("✅ اسکنر کریپتو نسخه ۳ شروع به کار کرد: تکنیکال ۱۵ دقیقه + روند ۱ و ۴ ساعته + فیلتر بنیادی و کلان، همراه طلا و نقره.")
     last_day = datetime.now(timezone.utc).date()
+    sent_brief = set()
     while True:
         start = time.time()
         try:
@@ -302,6 +322,13 @@ def scanner_loop():
             scan_once()
         except Exception as e:
             log.error("scan failed: %s", e)
+        teh = datetime.now(TEHRAN)
+        slot = (teh.date(), teh.hour)
+        if teh.hour in BRIEF_HOURS and slot not in sent_brief and macro.state["updated"]:
+            sent_brief.add(slot)
+            text = macro.brief()
+            if text:
+                send(text)
         today = datetime.now(timezone.utc).date()
         if today != last_day:
             last_day = today
@@ -337,6 +364,7 @@ class Health(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    threading.Thread(target=macro.loop, daemon=True).start()
     threading.Thread(target=scanner_loop, daemon=True).start()
     threading.Thread(target=keep_awake, daemon=True).start()
     port = int(os.getenv("PORT", "10000"))
