@@ -1,0 +1,4 @@
+signals.jsonl
+backtest_trades.json
+bt60.log
+__pycache__/
